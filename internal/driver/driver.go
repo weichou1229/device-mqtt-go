@@ -92,10 +92,8 @@ func (d *Driver) DisconnectDevice(deviceName string, protocols map[string]models
 
 func (d *Driver) HandleReadCommands(deviceName string, protocols map[string]models.ProtocolProperties, reqs []sdkModel.CommandRequest) ([]*sdkModel.CommandValue, error) {
 	var responses = make([]*sdkModel.CommandValue, len(reqs))
-	commandTopic, err := fetchCommandTopic(protocols)
-	if err != nil {
-		return responses, err
-	}
+	// TODO Fetch topic from the protocols
+	commandTopic := "xrt/device/modbus/modbus_device_service/request"
 
 	for i, req := range reqs {
 		res, err := d.handleReadCommandRequest(req, commandTopic)
@@ -107,7 +105,7 @@ func (d *Driver) HandleReadCommands(deviceName string, protocols map[string]mode
 		responses[i] = res
 	}
 
-	return responses, err
+	return responses, nil
 }
 
 func (d *Driver) handleReadCommandRequest(req sdkModel.CommandRequest, topic string) (*sdkModel.CommandValue, error) {
@@ -365,6 +363,12 @@ func (d *Driver) fetchCommandResponse(cmdUuid string) (string, bool) {
 
 func (d *Driver) AddDevice(deviceName string, protocols map[string]models.ProtocolProperties, adminState models.AdminState) error {
 	d.Logger.Debugf("Device %s is added", deviceName)
+
+	err := AddDeviceToXRT(driver.mqttClient, deviceName, protocols)
+	if err != nil {
+		return errors.NewCommonEdgeXWrapper(err)
+	}
+
 	return nil
 }
 

@@ -18,7 +18,7 @@ HealthCheckInterval = '10s'
 Host = 'localhost'
 Port = 59982
 ServerBindAddr = ''  # blank value defaults to Service.Host value
-StartupMsg = 'device mqtt started'
+StartupMsg = 'XRT deivce service started'
 # MaxRequestSize limit the request body size in byte of put command
 MaxRequestSize = 0 # value 0 unlimit the request size.
 RequestTimeout = '5s'
@@ -50,7 +50,7 @@ PublishTopicPrefix = 'edgex/events/device' # /<device-profile-name>/<device-name
   [MessageQueue.Optional]
   # Default MQTT Specific options that need to be here to enable environment variable overrides of them
   # Client Identifiers
-  ClientId = "device-mqtt"
+  ClientId = "device-xrt"
   # Connection information
   Qos = "0" # Quality of Sevice values are 0 (At most once), 1 (At least once) or 2 (Exactly once)
   KeepAlive = "10" # Seconds (must be 2 or greater)
@@ -63,11 +63,11 @@ PublishTopicPrefix = 'edgex/events/device' # /<device-profile-name>/<device-name
 Type = 'vault'
 Host = 'localhost'
 Port = 8200
-Path = 'device-mqtt/'
+Path = 'device-xrt/'
 Protocol = 'http'
 RootCaCertPath = ''
 ServerName = ''
-TokenFile = '/tmp/edgex/secrets/device-mqtt/secrets-token.json'
+TokenFile = '/tmp/edgex/secrets/device-xrt/secrets-token.json'
     [SecretStore.Authentication]
     AuthType = 'X-Vault-Token'
 
@@ -89,7 +89,7 @@ Host = '0.0.0.0'
 Port = 1883
 Qos = 0
 KeepAlive = 3600
-ClientId = 'device-mqtt'
+ClientId = 'device-xrt'
 
 CredentialsRetryTime = 120 # Seconds
 CredentialsRetryWait = 1 # Seconds
@@ -101,7 +101,7 @@ AuthMode = 'none'
 CredentialsPath = 'credentials'
 
 IncomingTopic = 'DataTopic'
-responseTopic = 'ResponseTopic'
+responseTopic = 'xrt/+/+/+/reply'
 
     [MQTTBrokerInfo.Writable]
     # ResponseFetchInterval specifies the retry interval(milliseconds) to fetch the command response from the MQTT broker

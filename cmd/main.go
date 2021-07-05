@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	serviceName string = "device-mqtt"
+	serviceName string = "device-xrt"
 )
 
 func main() {
