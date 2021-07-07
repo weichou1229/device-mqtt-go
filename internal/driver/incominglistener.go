@@ -57,7 +57,7 @@ func onIncomingDataReceived(client mqtt.Client, message mqtt.Message) {
 		Type:               deviceObject.Properties.ValueType,
 	}
 
-	result, err := newResult(req, reading)
+	result, err := newResult(resourceName, req.Type, reading)
 	if err != nil {
 		driver.Logger.Errorf("[Incoming listener] Incoming reading ignored, %v", err)
 		return

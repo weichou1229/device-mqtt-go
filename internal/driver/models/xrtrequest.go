@@ -1,40 +1,61 @@
 package models
 
 import (
+	"strconv"
+	"strings"
+
+	sdkModel "github.com/edgexfoundry/device-sdk-go/v2/pkg/models"
 	"github.com/edgexfoundry/device-sdk-go/v2/pkg/service"
 	"github.com/edgexfoundry/go-mod-core-contracts/v2/common"
 	"github.com/edgexfoundry/go-mod-core-contracts/v2/models"
+
 	"github.com/google/uuid"
-	"strconv"
-	"strings"
 )
 
 const (
 	ProfileAddOperation = "profile:add"
 	DeviceAddOperation  = "device:add"
+	DeviceGetOperation  = "device:get"
+	DeviceSetOperation  = "device:put"
 )
 
+type XRTRequest struct {
+	Client    string `json:"client"`
+	RequestId string `json:"request_id"`
+	Op        string `json:"op"`
+}
+
 type ProfileRequest struct {
-	Client    string        `json:"client"`
-	RequestId string        `json:"request_id"`
-	Op        string        `json:"op"`
-	Profile   DeviceProfile `json:"profile"`
+	XRTRequest `json:",inline"`
+	Profile    DeviceProfile `json:"profile"`
 }
 
 type DeviceRequest struct {
-	Client     string     `json:"client"`
-	RequestId  string     `json:"request_id"`
-	Op         string     `json:"op"`
+	XRTRequest `json:",inline"`
 	DeviceName string     `json:"device"`
 	DeviceInfo DeviceInfo `json:"device_info"`
+}
+
+type DeviceGetRequest struct {
+	XRTRequest `json:",inline"`
+	DeviceName string   `json:"device"`
+	Resource   []string `json:"resource"`
+}
+
+type DeviceSetRequest struct {
+	XRTRequest `json:",inline"`
+	DeviceName string                 `json:"device"`
+	Values     map[string]interface{} `json:"values"`
 }
 
 func NewProfileRequest(profile models.DeviceProfile) ProfileRequest {
 	ds := service.RunningService()
 	profileRequest := ProfileRequest{
-		Client:    ds.ServiceName,
-		RequestId: uuid.New().String(),
-		Op:        ProfileAddOperation,
+		XRTRequest: XRTRequest{
+			Client:    ds.ServiceName,
+			RequestId: uuid.New().String(),
+			Op:        ProfileAddOperation,
+		},
 		Profile: DeviceProfile{
 			DescribedObject: DescribedObject{},
 			Name:            profile.Name,
@@ -54,17 +75,57 @@ func NewProfileRequest(profile models.DeviceProfile) ProfileRequest {
 
 func NewDeviceRequest(device models.Device) DeviceRequest {
 	ds := service.RunningService()
-	deviceRepuest := DeviceRequest{
-		Client:     ds.ServiceName,
-		RequestId:  uuid.New().String(),
-		Op:         DeviceAddOperation,
+	deviceRequest := DeviceRequest{
+		XRTRequest: XRTRequest{
+			Client:    ds.ServiceName,
+			RequestId: uuid.New().String(),
+			Op:        DeviceAddOperation,
+		},
 		DeviceName: device.Name,
 		DeviceInfo: DeviceInfo{
 			ProfileName: device.ProfileName,
 			Protocols:   device.Protocols,
 		},
 	}
-	return deviceRepuest
+	return deviceRequest
+}
+
+func NewDeviceGetRequest(deviceName string, reqs []sdkModel.CommandRequest) DeviceGetRequest {
+	ds := service.RunningService()
+	req := DeviceGetRequest{
+		XRTRequest: XRTRequest{
+			Client:    ds.ServiceName,
+			RequestId: uuid.New().String(),
+			Op:        DeviceGetOperation,
+		},
+		DeviceName: deviceName,
+		Resource:   nil,
+	}
+	resources := make([]string, len(reqs))
+	for i, req := range reqs {
+		resources[i] = req.DeviceResourceName
+	}
+	req.Resource = resources
+	return req
+}
+
+func NewDeviceSetRequest(deviceName string, reqs []sdkModel.CommandRequest, params []*sdkModel.CommandValue) DeviceSetRequest {
+	ds := service.RunningService()
+	req := DeviceSetRequest{
+		XRTRequest: XRTRequest{
+			Client:    ds.ServiceName,
+			RequestId: uuid.New().String(),
+			Op:        DeviceSetOperation,
+		},
+		DeviceName: deviceName,
+		Values:     nil,
+	}
+	values := make(map[string]interface{}, len(reqs))
+	for i, req := range reqs {
+		values[req.DeviceResourceName] = params[i].Value
+	}
+	req.Values = values
+	return req
 }
 
 func DeviceResources(deviceResources []models.DeviceResource) []DeviceResource {

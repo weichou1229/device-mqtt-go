@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	xrtModel "github.com/edgexfoundry/device-mqtt-go/internal/driver/models"
+
 	sdkModel "github.com/edgexfoundry/device-sdk-go/v2/pkg/models"
 	"github.com/edgexfoundry/device-sdk-go/v2/pkg/service"
 	"github.com/edgexfoundry/go-mod-core-contracts/v2/clients/logger"
@@ -23,7 +25,6 @@ import (
 
 	"github.com/eclipse/paho.mqtt.golang"
 	"github.com/spf13/cast"
-	"gopkg.in/mgo.v2/bson"
 )
 
 var once sync.Once
@@ -36,6 +37,8 @@ type Driver struct {
 	serviceConfig    *ServiceConfig
 	mqttClient       mqtt.Client
 }
+
+const RequestTopic = "RequestTopic"
 
 func NewProtocolDriver() sdkModel.ProtocolDriver {
 	once.Do(func() {
@@ -91,126 +94,91 @@ func (d *Driver) DisconnectDevice(deviceName string, protocols map[string]models
 }
 
 func (d *Driver) HandleReadCommands(deviceName string, protocols map[string]models.ProtocolProperties, reqs []sdkModel.CommandRequest) ([]*sdkModel.CommandValue, error) {
-	var responses = make([]*sdkModel.CommandValue, len(reqs))
 	// TODO Fetch topic from the protocols
 	commandTopic := "xrt/device/modbus/modbus_device_service/request"
+	request := xrtModel.NewDeviceGetRequest(deviceName, reqs)
 
-	for i, req := range reqs {
-		res, err := d.handleReadCommandRequest(req, commandTopic)
-		if err != nil {
-			driver.Logger.Infof("Handle read commands failed: %v", err)
-			return responses, err
-		}
-
-		responses[i] = res
-	}
-
-	return responses, nil
-}
-
-func (d *Driver) handleReadCommandRequest(req sdkModel.CommandRequest, topic string) (*sdkModel.CommandValue, error) {
-	var result = &sdkModel.CommandValue{}
-	var err error
-	var qos = byte(0)
-	var retained = false
-
-	var method = "get"
-	var cmdUuid = bson.NewObjectId().Hex()
-	var cmd = req.DeviceResourceName
-
-	data := make(map[string]interface{})
-	data["uuid"] = cmdUuid
-	data["method"] = method
-	data["cmd"] = cmd
-
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return result, err
-	}
-
-	driver.mqttClient.Publish(topic, qos, retained, jsonData)
-
-	driver.Logger.Debugf("Publish command: %v", string(jsonData))
-
-	// fetch response from MQTT broker after publish command successful
-	cmdResponse, ok := d.fetchCommandResponse(cmdUuid)
-	if !ok {
-		return nil, errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("can not fetch command response: method=%v cmd=%v", method, cmd), nil)
-	}
-
-	driver.Logger.Debugf("Parse command response: %v", cmdResponse)
-
-	var response map[string]interface{}
-	json.Unmarshal([]byte(cmdResponse), &response)
-	reading, ok := response[cmd]
-	if !ok {
-		return nil, errors.NewCommonEdgeX(errors.KindContractInvalid, fmt.Sprintf("'%s' field not found in the response %s", cmd, cmdResponse), nil)
-	}
-
-	result, err = newResult(req, reading)
+	jsonData, err := json.Marshal(request)
 	if err != nil {
 		return nil, errors.NewCommonEdgeXWrapper(err)
 	}
-	driver.Logger.Debugf("Get command finished: %v", result)
 
-	return result, nil
+	token := d.mqttClient.Publish(commandTopic, byte(d.serviceConfig.MQTTBrokerInfo.Qos), false, jsonData)
+	if token.Wait() && token.Error() != nil {
+		return nil, errors.NewCommonEdgeXWrapper(err)
+	}
+
+	cmdResponse, ok := driver.fetchCommandResponse(request.RequestId)
+	if !ok {
+		return nil, errors.NewCommonEdgeX(errors.KindServerError, "can not fetch command response for getting the resource", nil)
+	}
+
+	var res xrtModel.EventResponse
+	err = json.Unmarshal([]byte(cmdResponse), &res)
+	if err != nil {
+		return nil, errors.NewCommonEdgeXWrapper(err)
+	}
+	if !res.Result.Success {
+		return nil, errors.NewCommonEdgeX(errors.KindServerError, res.Result.Error, nil)
+	}
+
+	responses, err := commandValues(res.Result.Readings)
+	if err != nil {
+		return nil, errors.NewCommonEdgeXWrapper(err)
+	}
+
+	driver.Logger.Debugf("Read command response: %v", res)
+	return responses, nil
+}
+
+func commandValues(readings map[string]xrtModel.Reading) ([]*sdkModel.CommandValue, errors.EdgeX) {
+	var responses = make([]*sdkModel.CommandValue, len(readings))
+	index := 0
+	for resourceName, reading := range readings {
+		valueType, err := common.NormalizeValueType(reading.Type)
+		if err != nil {
+			return nil, errors.NewCommonEdgeXWrapper(err)
+		}
+		res, err := newResult(resourceName, valueType, reading.Value)
+		if err != nil {
+			return nil, errors.NewCommonEdgeXWrapper(err)
+		}
+		responses[index] = res
+		index++
+	}
+	return responses, nil
 }
 
 func (d *Driver) HandleWriteCommands(deviceName string, protocols map[string]models.ProtocolProperties, reqs []sdkModel.CommandRequest, params []*sdkModel.CommandValue) error {
-	commandTopic, err := fetchCommandTopic(protocols)
+	// TODO Fetch topic from the protocols
+	commandTopic := "xrt/device/modbus/modbus_device_service/request"
+	request := xrtModel.NewDeviceSetRequest(deviceName, reqs, params)
+
+	jsonData, err := json.Marshal(request)
 	if err != nil {
 		return errors.NewCommonEdgeXWrapper(err)
 	}
 
-	for i, req := range reqs {
-		err = d.handleWriteCommandRequest(req, commandTopic, params[i])
-		if err != nil {
-			driver.Logger.Errorf("Handle write commands failed: %v", err)
-			return err
-		}
-	}
-
-	return err
-}
-
-func (d *Driver) handleWriteCommandRequest(req sdkModel.CommandRequest, topic string, param *sdkModel.CommandValue) errors.EdgeX {
-	var err error
-	var qos = byte(0)
-	var retained = false
-
-	var method = "set"
-	var cmdUuid = bson.NewObjectId().Hex()
-	var cmd = req.DeviceResourceName
-
-	data := make(map[string]interface{})
-	data["uuid"] = cmdUuid
-	data["method"] = method
-	data["cmd"] = cmd
-
-	commandValue, err := newCommandValue(req.Type, param)
-	if err != nil {
-		return errors.NewCommonEdgeXWrapper(err)
-	} else {
-		data[cmd] = commandValue
-	}
-
-	jsonData, err := json.Marshal(data)
-	if err != nil {
+	token := d.mqttClient.Publish(commandTopic, byte(d.serviceConfig.MQTTBrokerInfo.Qos), false, jsonData)
+	if token.Wait() && token.Error() != nil {
 		return errors.NewCommonEdgeXWrapper(err)
 	}
 
-	driver.mqttClient.Publish(topic, qos, retained, jsonData)
-
-	driver.Logger.Debugf("Publish command: %v", string(jsonData))
-
-	//wait and fetch response from CommandResponses map
-	cmdResponse, ok := d.fetchCommandResponse(cmdUuid)
+	cmdResponse, ok := driver.fetchCommandResponse(request.RequestId)
 	if !ok {
-		return errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("can not fetch command response: method=%v cmd=%v", method, cmd), nil)
+		return errors.NewCommonEdgeX(errors.KindServerError, "can not fetch command response for writing the resources", nil)
 	}
 
-	driver.Logger.Debugf("Put command finished: %v", cmdResponse)
+	var res xrtModel.CommonResponse
+	err = json.Unmarshal([]byte(cmdResponse), &res)
+	if err != nil {
+		return errors.NewCommonEdgeXWrapper(err)
+	}
+	if !res.Result.Success {
+		return errors.NewCommonEdgeX(errors.KindServerError, res.Result.Error, nil)
+	}
 
+	driver.Logger.Debugf("Write command response: %v", cmdResponse)
 	return nil
 }
 
@@ -222,85 +190,85 @@ func (d *Driver) Stop(force bool) error {
 	return nil
 }
 
-func newResult(req sdkModel.CommandRequest, reading interface{}) (*sdkModel.CommandValue, error) {
+func newResult(resourceName string, valueType string, reading interface{}) (*sdkModel.CommandValue, error) {
 	var err error
 	var result = &sdkModel.CommandValue{}
 	castError := "fail to parse %v reading, %v"
 
-	if !checkValueInRange(req.Type, reading) {
-		err = fmt.Errorf("parse reading fail. Reading %v is out of the value type(%v)'s range", reading, req.Type)
+	if !checkValueInRange(valueType, reading) {
+		err = fmt.Errorf("parse reading fail. Reading %v is out of the value type(%v)'s range", reading, valueType)
 		driver.Logger.Error(err.Error())
 		return result, err
 	}
 
 	var val interface{}
-	switch req.Type {
+	switch valueType {
 	case common.ValueTypeBool:
 		val, err = cast.ToBoolE(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeString:
 		val, err = cast.ToStringE(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeUint8:
 		val, err = cast.ToUint8E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeUint16:
 		val, err = cast.ToUint16E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeUint32:
 		val, err = cast.ToUint32E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeUint64:
 		val, err = cast.ToUint64E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeInt8:
 		val, err = cast.ToInt8E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeInt16:
 		val, err = cast.ToInt16E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeInt32:
 		val, err = cast.ToInt32E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeInt64:
 		val, err = cast.ToInt64E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeFloat32:
 		val, err = cast.ToFloat32E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	case common.ValueTypeFloat64:
 		val, err = cast.ToFloat64E(reading)
 		if err != nil {
-			return nil, fmt.Errorf(castError, req.DeviceResourceName, err)
+			return nil, fmt.Errorf(castError, resourceName, err)
 		}
 	default:
-		return nil, fmt.Errorf("return result fail, none supported value type: %v", req.Type)
+		return nil, fmt.Errorf("return result fail, none supported value type: %v", valueType)
 
 	}
 
-	result, err = sdkModel.NewCommandValue(req.DeviceResourceName, req.Type, val)
+	result, err = sdkModel.NewCommandValue(resourceName, valueType, val)
 	if err != nil {
 		return nil, err
 	}
