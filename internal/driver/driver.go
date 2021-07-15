@@ -94,16 +94,17 @@ func (d *Driver) DisconnectDevice(deviceName string, protocols map[string]models
 }
 
 func (d *Driver) HandleReadCommands(deviceName string, protocols map[string]models.ProtocolProperties, reqs []sdkModel.CommandRequest) ([]*sdkModel.CommandValue, error) {
-	// TODO Fetch topic from the protocols
-	commandTopic := "xrt/device/modbus/modbus_device_service/request"
-	request := xrtModel.NewDeviceGetRequest(deviceName, reqs)
+	protocol := "Modbus"
+	serviceName := "modbus_ds"
+	topic := fmt.Sprintf("xrt/device/%s/%s/request", protocol, serviceName)
+	request := xrtModel.NewDeviceResourceGetRequest(deviceName, reqs)
 
 	jsonData, err := json.Marshal(request)
 	if err != nil {
 		return nil, errors.NewCommonEdgeXWrapper(err)
 	}
 
-	token := d.mqttClient.Publish(commandTopic, byte(d.serviceConfig.MQTTBrokerInfo.Qos), false, jsonData)
+	token := d.mqttClient.Publish(topic, byte(d.serviceConfig.MQTTBrokerInfo.Qos), false, jsonData)
 	if token.Wait() && token.Error() != nil {
 		return nil, errors.NewCommonEdgeXWrapper(err)
 	}
@@ -150,16 +151,17 @@ func commandValues(readings map[string]xrtModel.Reading) ([]*sdkModel.CommandVal
 }
 
 func (d *Driver) HandleWriteCommands(deviceName string, protocols map[string]models.ProtocolProperties, reqs []sdkModel.CommandRequest, params []*sdkModel.CommandValue) error {
-	// TODO Fetch topic from the protocols
-	commandTopic := "xrt/device/modbus/modbus_device_service/request"
-	request := xrtModel.NewDeviceSetRequest(deviceName, reqs, params)
+	protocol := "Modbus"
+	serviceName := "modbus_ds"
+	topic := fmt.Sprintf("xrt/device/%s/%s/request", protocol, serviceName)
+	request := xrtModel.NewDeviceResourceSetRequest(deviceName, reqs, params)
 
 	jsonData, err := json.Marshal(request)
 	if err != nil {
 		return errors.NewCommonEdgeXWrapper(err)
 	}
 
-	token := d.mqttClient.Publish(commandTopic, byte(d.serviceConfig.MQTTBrokerInfo.Qos), false, jsonData)
+	token := d.mqttClient.Publish(topic, byte(d.serviceConfig.MQTTBrokerInfo.Qos), false, jsonData)
 	if token.Wait() && token.Error() != nil {
 		return errors.NewCommonEdgeXWrapper(err)
 	}
@@ -329,6 +331,23 @@ func (d *Driver) fetchCommandResponse(cmdUuid string) (string, bool) {
 	return fmt.Sprintf("%v", cmdResponse), ok
 }
 
+// fetchXRTResponse use to wait and fetch response from CommandResponses map
+func (d *Driver) fetchXRTResponse(cmdUuid string, responseWaitMillisecond int) (string, bool) {
+	var cmdResponse interface{}
+	var ok bool
+	for i := 0; i < 5; i++ {
+		cmdResponse, ok = d.CommandResponses.Load(cmdUuid)
+		if ok {
+			d.CommandResponses.Delete(cmdUuid)
+			break
+		} else {
+			time.Sleep(time.Millisecond * time.Duration(responseWaitMillisecond))
+		}
+	}
+
+	return fmt.Sprintf("%v", cmdResponse), ok
+}
+
 func (d *Driver) AddDevice(deviceName string, protocols map[string]models.ProtocolProperties, adminState models.AdminState) error {
 	d.Logger.Debugf("Device %s is added", deviceName)
 
@@ -428,4 +447,174 @@ func onConnectHandler(client mqtt.Client) {
 	}
 	driver.Logger.Infof("Subscribed to topic '%s' for receiving the request response", responseTopic)
 
+}
+
+// Discover triggers protocol specific device discovery, which is an asynchronous operation.
+func (d *Driver) Discover() {
+	driver.Logger.Infof("Trigger Discover...")
+	ds := service.RunningService()
+
+	protocol := "BACnet-IP"
+	serviceName := "bacnet_ds"
+	bacnetTriggerTopic := fmt.Sprintf("xrt/discovery/%s/%s/request", protocol, serviceName)
+
+	// Trigger discovery
+	request := xrtModel.NewXRTRequest(xrtModel.DiscoveryTriggerOperation)
+	var res xrtModel.CommonResponse
+	err := d.sendXRTRequest(bacnetTriggerTopic, request, request.RequestId, 1000, &res)
+	if err != nil {
+		driver.Logger.Errorf("Fail to trigger discovery: %v", err)
+		return
+	}
+	if !res.Result.Success {
+		driver.Logger.Errorf("Fail to trigger discovery: %s", res.Result.Error)
+		return
+	}
+	driver.Logger.Debug("Discovery triggered ...")
+
+	// Check and add profile
+	profiles, err := d.queryProfileListFromXRT()
+	if err != nil {
+		driver.Logger.Errorf("Fail to query profile list: %v", err)
+		return
+	}
+	for _, profile := range profiles {
+		_, err := ds.GetProfileByName(profile)
+		if err != nil {
+			p, edgexErr := d.queryProfileFromXRT(profile)
+			if edgexErr != nil {
+				driver.Logger.Errorf("Fail to query profile: %v", edgexErr)
+				return
+			}
+			driver.Logger.Infof(p.Name)
+			_, err := ds.AddDeviceProfile(xrtModel.Profile(p))
+			if err != nil {
+				driver.Logger.Errorf("Fail to add profile: %v", err)
+				return
+			}
+		}
+	}
+
+	// Check and add device
+	devices, err := d.queryDeviceListFromXRT()
+	if err != nil {
+		driver.Logger.Errorf("Fail to query device list: %v", err)
+		return
+	}
+	for _, device := range devices {
+		_, err := ds.GetDeviceByName(device)
+		if err != nil {
+			d, edgexErr := d.queryDeviceFromXRT(device)
+			if edgexErr != nil {
+				driver.Logger.Errorf("Fail to query device: %v", edgexErr)
+				return
+			}
+			driver.Logger.Infof(d.Name)
+			_, err := ds.AddDevice(xrtModel.Device(d))
+			if err != nil {
+				driver.Logger.Errorf("Fail to add device: %v", err)
+				return
+			}
+		}
+	}
+
+}
+
+func (d *Driver) queryProfileListFromXRT() ([]string, errors.EdgeX) {
+	protocol := "BACnet-IP"
+	serviceName := "bacnet_ds"
+	topic := fmt.Sprintf("xrt/profile/%s/%s/request", protocol, serviceName)
+	request := xrtModel.NewXRTRequest(xrtModel.ProfileListOperation)
+	var profileRes xrtModel.ProfileListResponse
+
+	err := d.sendXRTRequest(topic, request, request.RequestId, 1000, &profileRes)
+	if err != nil {
+		return nil, errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("Fail to query profile list: %v", err), nil)
+	}
+	if !profileRes.Result.Success {
+		return nil, errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("Fail to query profile list: %s", profileRes.Result.Error), nil)
+	}
+
+	driver.Logger.Debugf("Profile list %v", profileRes.Result.Profiles)
+	return profileRes.Result.Profiles, nil
+}
+
+func (d *Driver) queryProfileFromXRT(profileName string) (xrtModel.DeviceProfile, errors.EdgeX) {
+	protocol := "BACnet-IP"
+	serviceName := "bacnet_ds"
+	topic := fmt.Sprintf("xrt/profile/%s/%s/request", protocol, serviceName)
+	request := xrtModel.NewProfileGetRequest(profileName)
+	var response xrtModel.ProfileGetResponse
+
+	err := d.sendXRTRequest(topic, request, request.RequestId, 1000, &response)
+	if err != nil {
+		return xrtModel.DeviceProfile{}, errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("Fail to query profile: %v", err), nil)
+	}
+	if !response.Result.Success {
+		return xrtModel.DeviceProfile{}, errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("Fail to query profile: %s", response.Result.Error), nil)
+	}
+
+	driver.Logger.Debugf("Profile %v", response.Result.Profile.Name)
+	return response.Result.Profile, nil
+}
+
+func (d *Driver) queryDeviceListFromXRT() ([]string, errors.EdgeX) {
+	protocol := "BACnet-IP"
+	serviceName := "bacnet_ds"
+	topic := fmt.Sprintf("xrt/device/%s/%s/request", protocol, serviceName)
+	request := xrtModel.NewXRTRequest(xrtModel.DeviceListOperation)
+	var response xrtModel.DeviceResponse
+
+	err := d.sendXRTRequest(topic, request, request.RequestId, 1000, &response)
+	if err != nil {
+		return nil, errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("Fail to query device list: %v", err), nil)
+	}
+	if !response.Result.Success {
+		return nil, errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("Fail to query device list: %s", response.Result.Error), nil)
+	}
+
+	driver.Logger.Debugf("Device list %v", response.Result.Devices)
+	return response.Result.Devices, nil
+}
+
+func (d *Driver) queryDeviceFromXRT(deviceName string) (xrtModel.DeviceInfo, errors.EdgeX) {
+	protocol := "BACnet-IP"
+	serviceName := "bacnet_ds"
+	topic := fmt.Sprintf("xrt/device/%s/%s/request", protocol, serviceName)
+	request := xrtModel.NewDeviceGetRequest(deviceName)
+	var response xrtModel.DeviceGetResponse
+
+	err := d.sendXRTRequest(topic, request, request.RequestId, 2500, &response)
+	if err != nil {
+		return xrtModel.DeviceInfo{}, errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("Fail to query device: %v", err), nil)
+	}
+	if !response.Result.Success {
+		return xrtModel.DeviceInfo{}, errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("Fail to query device: %s", response.Result.Error), nil)
+	}
+
+	driver.Logger.Debugf("Device %v", response.Result.Device.Name)
+	return response.Result.Device, nil
+}
+
+func (d *Driver) sendXRTRequest(topic string, request interface{}, requestId string, responseWaitMillisecond int, response interface{}) errors.EdgeX {
+	jsonData, err := json.Marshal(request)
+	if err != nil {
+		return errors.NewCommonEdgeXWrapper(err)
+	}
+
+	token := d.mqttClient.Publish(topic, byte(0), false, jsonData)
+	if token.Wait() && token.Error() != nil {
+		return errors.NewCommonEdgeXWrapper(err)
+	}
+
+	cmdResponse, ok := driver.fetchXRTResponse(requestId, responseWaitMillisecond)
+	if !ok {
+		return errors.NewCommonEdgeX(errors.KindServerError, "Fail to fetch command response for device list", nil)
+	}
+
+	err = json.Unmarshal([]byte(cmdResponse), response)
+	if err != nil {
+		return errors.NewCommonEdgeX(errors.KindServerError, fmt.Sprintf("Fail to parse command response: %v", err), nil)
+	}
+	return nil
 }

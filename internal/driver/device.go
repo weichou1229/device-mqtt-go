@@ -37,14 +37,15 @@ func AddDeviceToXRT(mqttClient mqtt.Client, deviceName string, protocols map[str
 }
 
 func addProfileToXRT(mqttClient mqtt.Client, profile models.DeviceProfile) errors.EdgeX {
-	// TODO Fetch topic from the protocols
-	profileTopic := "xrt/profile/modbus/modbus_device_service/request"
-	profileRequest := xrtModel.NewProfileRequest(profile)
+	protocol := "Modbus"
+	serviceName := "modbus_ds"
+	topic := fmt.Sprintf("xrt/profile/%s/%s/request", protocol, serviceName)
+	profileRequest := xrtModel.NewProfileAddRequest(profile)
 	jsonData, err := json.Marshal(profileRequest)
 	if err != nil {
 		return errors.NewCommonEdgeXWrapper(err)
 	}
-	token := mqttClient.Publish(profileTopic, byte(0), false, jsonData)
+	token := mqttClient.Publish(topic, byte(0), false, jsonData)
 	if token.Wait() && token.Error() != nil {
 		return errors.NewCommonEdgeXWrapper(err)
 	}
@@ -59,15 +60,16 @@ func addProfileToXRT(mqttClient mqtt.Client, profile models.DeviceProfile) error
 }
 
 func addDeviceToXRT(mqttClient mqtt.Client, device models.Device) errors.EdgeX {
-	// TODO Fetch topic from the protocols
-	deviceTopic := "xrt/device/modbus/modbus_device_service/request"
-	deviceRequest := xrtModel.NewDeviceRequest(device)
+	protocol := "Modbus"
+	serviceName := "modbus_ds"
+	topic := fmt.Sprintf("xrt/device/%s/%s/request", protocol, serviceName)
+	deviceRequest := xrtModel.NewDeviceAddRequest(device)
 	jsonData, err := json.Marshal(deviceRequest)
 	if err != nil {
 		return errors.NewCommonEdgeXWrapper(err)
 	}
 
-	token := mqttClient.Publish(deviceTopic, byte(0), false, jsonData)
+	token := mqttClient.Publish(topic, byte(0), false, jsonData)
 	if token.Wait() && token.Error() != nil {
 		return errors.NewCommonEdgeXWrapper(err)
 	}

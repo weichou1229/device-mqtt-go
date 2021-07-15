@@ -13,10 +13,17 @@ import (
 )
 
 const (
-	ProfileAddOperation = "profile:add"
-	DeviceAddOperation  = "device:add"
-	DeviceGetOperation  = "device:get"
-	DeviceSetOperation  = "device:put"
+	ProfileAddOperation  = "profile:add"
+	ProfileListOperation = "profile:list"
+	ProfileGetOperation  = "profile:read"
+
+	DeviceAddOperation         = "device:add"
+	DeviceResourceGetOperation = "device:get"
+	DeviceGetOperation         = "device:read"
+	DeviceSetOperation         = "device:put"
+	DeviceListOperation        = "device:list"
+
+	DiscoveryTriggerOperation = "discovery:trigger"
 )
 
 type XRTRequest struct {
@@ -25,12 +32,17 @@ type XRTRequest struct {
 	Op        string `json:"op"`
 }
 
-type ProfileRequest struct {
+type ProfileAddRequest struct {
 	XRTRequest `json:",inline"`
 	Profile    DeviceProfile `json:"profile"`
 }
 
-type DeviceRequest struct {
+type ProfileGetRequest struct {
+	XRTRequest `json:",inline"`
+	Profile    string `json:"profile"`
+}
+
+type DeviceAddRequest struct {
 	XRTRequest `json:",inline"`
 	DeviceName string     `json:"device"`
 	DeviceInfo DeviceInfo `json:"device_info"`
@@ -38,44 +50,59 @@ type DeviceRequest struct {
 
 type DeviceGetRequest struct {
 	XRTRequest `json:",inline"`
+	Device     string `json:"device"`
+}
+
+type DeviceResourceGetRequest struct {
+	XRTRequest `json:",inline"`
 	DeviceName string   `json:"device"`
 	Resource   []string `json:"resource"`
 }
 
-type DeviceSetRequest struct {
+type DeviceResourceSetRequest struct {
 	XRTRequest `json:",inline"`
 	DeviceName string                 `json:"device"`
 	Values     map[string]interface{} `json:"values"`
 }
 
-func NewProfileRequest(profile models.DeviceProfile) ProfileRequest {
+func NewXRTRequest(op string) XRTRequest {
 	ds := service.RunningService()
-	profileRequest := ProfileRequest{
+	return XRTRequest{
+		Client:    ds.ServiceName,
+		RequestId: uuid.New().String(),
+		Op:        op,
+	}
+}
+
+func NewProfileAddRequest(profile models.DeviceProfile) ProfileAddRequest {
+	ds := service.RunningService()
+	req := ProfileAddRequest{
 		XRTRequest: XRTRequest{
 			Client:    ds.ServiceName,
 			RequestId: uuid.New().String(),
 			Op:        ProfileAddOperation,
 		},
-		Profile: DeviceProfile{
-			DescribedObject: DescribedObject{},
-			Name:            profile.Name,
-			Manufacturer:    profile.Manufacturer,
-			Model:           profile.Model,
-			Labels:          profile.Labels,
-			DeviceResources: nil,
-			DeviceCommands:  nil,
-		},
+		Profile: profileDTO(profile),
 	}
 
-	profileRequest.Profile.DeviceResources = DeviceResources(profile.DeviceResources)
-	profileRequest.Profile.DeviceCommands = DeviceCommands(profile.DeviceCommands)
-
-	return profileRequest
+	return req
 }
 
-func NewDeviceRequest(device models.Device) DeviceRequest {
+func NewProfileGetRequest(profileName string) ProfileGetRequest {
 	ds := service.RunningService()
-	deviceRequest := DeviceRequest{
+	return ProfileGetRequest{
+		XRTRequest: XRTRequest{
+			Client:    ds.ServiceName,
+			RequestId: uuid.New().String(),
+			Op:        ProfileGetOperation,
+		},
+		Profile: profileName,
+	}
+}
+
+func NewDeviceAddRequest(device models.Device) DeviceAddRequest {
+	ds := service.RunningService()
+	deviceRequest := DeviceAddRequest{
 		XRTRequest: XRTRequest{
 			Client:    ds.ServiceName,
 			RequestId: uuid.New().String(),
@@ -90,7 +117,7 @@ func NewDeviceRequest(device models.Device) DeviceRequest {
 	return deviceRequest
 }
 
-func NewDeviceGetRequest(deviceName string, reqs []sdkModel.CommandRequest) DeviceGetRequest {
+func NewDeviceGetRequest(deviceName string) DeviceGetRequest {
 	ds := service.RunningService()
 	req := DeviceGetRequest{
 		XRTRequest: XRTRequest{
@@ -98,20 +125,34 @@ func NewDeviceGetRequest(deviceName string, reqs []sdkModel.CommandRequest) Devi
 			RequestId: uuid.New().String(),
 			Op:        DeviceGetOperation,
 		},
+		Device: deviceName,
+	}
+	return req
+}
+
+func NewDeviceResourceGetRequest(deviceName string, reqs []sdkModel.CommandRequest) DeviceResourceGetRequest {
+	ds := service.RunningService()
+	req := DeviceResourceGetRequest{
+		XRTRequest: XRTRequest{
+			Client:    ds.ServiceName,
+			RequestId: uuid.New().String(),
+			Op:        DeviceResourceGetOperation,
+		},
 		DeviceName: deviceName,
 		Resource:   nil,
 	}
 	resources := make([]string, len(reqs))
 	for i, req := range reqs {
-		resources[i] = req.DeviceResourceName
+		//resources[i] = req.DeviceResourceName
+		resources[i] = strings.Replace(req.DeviceResourceName, "_", ":", -1) // TODO Invalid Resource Name  SimpleServer:object-identifier
 	}
 	req.Resource = resources
 	return req
 }
 
-func NewDeviceSetRequest(deviceName string, reqs []sdkModel.CommandRequest, params []*sdkModel.CommandValue) DeviceSetRequest {
+func NewDeviceResourceSetRequest(deviceName string, reqs []sdkModel.CommandRequest, params []*sdkModel.CommandValue) DeviceResourceSetRequest {
 	ds := service.RunningService()
-	req := DeviceSetRequest{
+	req := DeviceResourceSetRequest{
 		XRTRequest: XRTRequest{
 			Client:    ds.ServiceName,
 			RequestId: uuid.New().String(),
@@ -128,7 +169,22 @@ func NewDeviceSetRequest(deviceName string, reqs []sdkModel.CommandRequest, para
 	return req
 }
 
-func DeviceResources(deviceResources []models.DeviceResource) []DeviceResource {
+func profileDTO(profile models.DeviceProfile) DeviceProfile {
+	dto := DeviceProfile{
+		DescribedObject: DescribedObject{},
+		Name:            profile.Name,
+		Manufacturer:    profile.Manufacturer,
+		Model:           profile.Model,
+		Labels:          profile.Labels,
+		DeviceResources: nil,
+		DeviceCommands:  nil,
+	}
+	dto.DeviceResources = DeviceResourcesDTO(profile.DeviceResources)
+	dto.DeviceCommands = DeviceCommandsDTO(profile.DeviceCommands)
+	return dto
+}
+
+func DeviceResourcesDTO(deviceResources []models.DeviceResource) []DeviceResource {
 	resources := make([]DeviceResource, len(deviceResources))
 	for i, r := range deviceResources {
 		resources[i] = DeviceResource{
@@ -164,24 +220,24 @@ func DeviceResources(deviceResources []models.DeviceResource) []DeviceResource {
 	return resources
 }
 
-func DeviceCommands(deviceCommands []models.DeviceCommand) []ProfileResource {
+func DeviceCommandsDTO(deviceCommands []models.DeviceCommand) []ProfileResource {
 	commands := make([]ProfileResource, len(deviceCommands))
 	for i, c := range deviceCommands {
 		commands[i] = ProfileResource{
 			Name: c.Name,
 		}
 		if strings.Contains(c.ReadWrite, common.ReadWrite_R) {
-			commands[i].Get = Operation(ResourceOperationGet, c.ResourceOperations)
+			commands[i].Get = OperationDTO(ResourceOperationGet, c.ResourceOperations)
 		}
 		if strings.Contains(c.ReadWrite, common.ReadWrite_W) {
-			commands[i].Set = Operation(ResourceOperationSet, c.ResourceOperations)
+			commands[i].Set = OperationDTO(ResourceOperationSet, c.ResourceOperations)
 		}
 	}
 
 	return commands
 }
 
-func Operation(op string, resourceOperations []models.ResourceOperation) []ResourceOperation {
+func OperationDTO(op string, resourceOperations []models.ResourceOperation) []ResourceOperation {
 	operations := make([]ResourceOperation, len(resourceOperations))
 	for i, ro := range resourceOperations {
 		operations[i] = ResourceOperation{
@@ -192,4 +248,119 @@ func Operation(op string, resourceOperations []models.ResourceOperation) []Resou
 		}
 	}
 	return operations
+}
+
+func Profile(profile DeviceProfile) models.DeviceProfile {
+	dto := models.DeviceProfile{
+		Description:     profile.Description,
+		Name:            profile.Name,
+		Manufacturer:    profile.Manufacturer,
+		Model:           profile.Model,
+		Labels:          profile.Labels,
+		DeviceResources: nil,
+		DeviceCommands:  nil,
+	}
+	dto.DeviceResources = DeviceResources(profile.DeviceResources)
+	dto.DeviceCommands = DeviceCommands(profile.DeviceCommands)
+	return dto
+}
+
+func DeviceResources(deviceResources []DeviceResource) []models.DeviceResource {
+	resources := make([]models.DeviceResource, len(deviceResources))
+	for i, r := range deviceResources {
+		resources[i] = models.DeviceResource{
+			Description: r.Description,
+			Name:        strings.Replace(r.Name, ":", "_", -1), // TODO Invalid Resource Name  SimpleServer:object-identifier
+			IsHidden:    false,
+			Tag:         r.Tag,
+			Properties: models.ResourceProperties{
+				ValueType:    r.Properties.Value.Type,
+				ReadWrite:    r.Properties.Value.ReadWrite,
+				Units:        r.Properties.Units.DefaultValue,
+				Minimum:      r.Properties.Value.Minimum,
+				Maximum:      r.Properties.Value.Maximum,
+				DefaultValue: r.Properties.Value.DefaultValue,
+				Mask:         r.Properties.Value.Mask,
+				Shift:        r.Properties.Value.Shift,
+				Scale:        r.Properties.Value.Scale,
+				Offset:       r.Properties.Value.Offset,
+				Base:         r.Properties.Value.Base,
+				Assertion:    r.Properties.Value.Assertion,
+				MediaType:    r.Properties.Value.MediaType,
+			},
+			Attributes: r.Attributes,
+		}
+	}
+
+	return resources
+}
+
+func DeviceCommands(deviceCommands []ProfileResource) []models.DeviceCommand {
+	commands := make([]models.DeviceCommand, len(deviceCommands))
+	for i, c := range deviceCommands {
+		commands[i] = models.DeviceCommand{
+			Name:               c.Name,
+			IsHidden:           false,
+			ReadWrite:          "",
+			ResourceOperations: nil,
+		}
+		if len(c.Get) > 0 && len(c.Set) > 0 {
+			commands[i].ReadWrite = common.ReadWrite_RW
+		} else if len(c.Get) > 0 {
+			commands[i].ReadWrite = common.ReadWrite_R
+		} else {
+			commands[i].ReadWrite = common.ReadWrite_W
+		}
+		var ros []models.ResourceOperation
+		for _, op := range c.Get {
+			ro := models.ResourceOperation{
+				DeviceResource: op.DeviceResource,
+				DefaultValue:   "",
+				Mappings:       op.Mappings,
+			}
+			ros = append(ros, ro)
+		}
+		for _, op := range c.Set {
+			exists := existFromResourceDTO(op.DeviceResource, ros)
+			if exists {
+				continue
+			}
+			ro := models.ResourceOperation{
+				DeviceResource: op.DeviceResource,
+				DefaultValue:   "",
+				Mappings:       op.Mappings,
+			}
+			ros = append(ros, ro)
+		}
+		commands[i].ResourceOperations = ros
+	}
+
+	return commands
+}
+
+func existFromResourceDTO(resourceName string, ros []models.ResourceOperation) bool {
+	for _, ro := range ros {
+		if ro.DeviceResource == resourceName {
+			return true
+		}
+	}
+	return false
+}
+
+func Device(device DeviceInfo) models.Device {
+	return models.Device{
+		Name:           device.Name,
+		Description:    "",
+		AdminState:     models.Unlocked,
+		OperatingState: models.Up,
+		Protocols:      device.Protocols,
+		LastConnected:  0,
+		LastReported:   0,
+		Labels:         nil,
+		Location:       nil,
+		ServiceName:    service.RunningService().ServiceName,
+		ProfileName:    device.ProfileName,
+		AutoEvents:     nil,
+		Notify:         false,
+	}
 }

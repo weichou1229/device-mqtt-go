@@ -3,7 +3,6 @@ package models
 type XRTResponse struct {
 	Client    string `json:"client"`
 	RequestId string `json:"request_id"`
-	Op        string `json:"op"`
 }
 
 type CommonResponse struct {
@@ -29,4 +28,44 @@ type EventResult struct {
 type Reading struct {
 	Value interface{} `json:"value"`
 	Type  string      `json:"type"`
+}
+
+type DeviceResponse struct {
+	XRTResponse `json:",inline"`
+	Result      DeviceListResult `json:"result"`
+}
+
+type DeviceListResult struct {
+	CommonResult `json:",inline"`
+	Devices      []string `json:"devices"`
+}
+
+type DeviceGetResponse struct {
+	XRTResponse `json:",inline"`
+	Result      DeviceGetResult `json:"result"`
+}
+
+type DeviceGetResult struct {
+	CommonResult `json:",inline"`
+	Device       DeviceInfo `json:"device"`
+}
+
+type ProfileListResponse struct {
+	XRTResponse `json:",inline"`
+	Result      ProfileListResult `json:"result"`
+}
+
+type ProfileListResult struct {
+	CommonResult `json:",inline"`
+	Profiles     []string `json:"profiles"`
+}
+
+type ProfileGetResponse struct {
+	CommonResult `json:",inline"`
+	Result       ProfileGetResult `json:"result"`
+}
+
+type ProfileGetResult struct {
+	CommonResult `json:",inline"`
+	Profile      DeviceProfile `json:"profile"`
 }
